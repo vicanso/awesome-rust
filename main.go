@@ -1,13 +1,10 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
 	"net/http"
-	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -30,8 +27,7 @@ var ins = axios.NewInstance(&axios.InstanceConfig{
 })
 var defaultLogger *zap.Logger
 
-// 用于保存repo的star数量，用于在获取失败时使用
-var originalRepoStars = map[string]int{}
+var startCounts = map[string]int{}
 
 // github api的认证参数
 var clientToken *string
@@ -70,6 +66,10 @@ func init() {
 
 // 获取star的数量
 func getStarCount(name string) (count int, err error) {
+	count, ok := startCounts[name]
+	if ok {
+		return count, nil
+	}
 	url := fmt.Sprintf(apiRepoInfo, name)
 	// 如果出错则认为0
 	headers := make(http.Header)
@@ -87,11 +87,12 @@ func getStarCount(name string) (count int, err error) {
 		return
 	}
 	count = info.StargazersCount
+	startCounts[name] = count
 	return
 }
 
 // 按star对同一分类的repo重排
-func arrangeByStar(lines []string) (result []string, err error) {
+func arrangeByStar(lines []string, min int) (result []string, err error) {
 	result = make([]string, 0, len(lines))
 	newCatStart := false
 
@@ -115,7 +116,6 @@ func arrangeByStar(lines []string) (result []string, err error) {
 						zap.String("repo", name),
 						zap.Error(e),
 					)
-					count = originalRepoStars[name]
 				}
 
 				repo.star = count
@@ -125,14 +125,15 @@ func arrangeByStar(lines []string) (result []string, err error) {
 						stars = fmt.Sprintf("%.1fK", float32(repo.star)/1000)
 					}
 					repo.content += fmt.Sprintf(" Stars:`%s`.", stars)
-					originalRepoStars[name] = repo.star
 				}
 				defaultLogger.Info("get repo info success",
 					zap.String("repo", name),
 					zap.Int("star", count),
 				)
 			}
-			repos = append(repos, repo)
+			if repo.star > min {
+				repos = append(repos, repo)
+			}
 			continue
 		}
 		// 如果开始不匹配，则该分类结束
@@ -160,15 +161,20 @@ func main() {
 	}
 	lines := strings.SplitN(string(resp.Data), "\n", -1)
 
-	result, err := arrangeByStar(lines)
+	result, err := arrangeByStar(lines, -1)
 	if err != nil {
 		panic(err)
 	}
-	buf, _ := json.Marshal(originalRepoStars)
-	if len(buf) != 0 {
-		_ = ioutil.WriteFile(filepath.Join(os.TempDir()+"awesome-rust.json"), buf, 0600)
-	}
 	err = ioutil.WriteFile("./README.md", []byte(strings.Join(result, "\n")), 0600)
+	if err != nil {
+		panic(err)
+	}
+
+	result, err = arrangeByStar(lines, 1000)
+	if err != nil {
+		panic(err)
+	}
+	err = ioutil.WriteFile("./README-1k.md", []byte(strings.Join(result, "\n")), 0600)
 	if err != nil {
 		panic(err)
 	}
